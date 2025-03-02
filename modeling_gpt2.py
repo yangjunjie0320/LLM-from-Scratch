@@ -289,7 +289,6 @@ if __name__ == "__main__":
     m_sol = GPT.from_pretrained("gpt2")
     m_sol.eval()
     y_sol = m_sol.forward(tokens)[0]
-    print(y_sol.shape, y_sol.device, y_sol.dtype)
 
     from transformers import GPT2LMHeadModel
     m_ref = GPT2LMHeadModel.from_pretrained("gpt2")
@@ -319,3 +318,6 @@ if __name__ == "__main__":
         do_sample=True,
     )
     print(tokenizer.decode(out_ref[0].tolist()).replace("\n", ""))
+
+    out = generate(m_sol, tokens, max_new_tokens=20, temperature=1.0, repetition_penalty=1.2, do_sample=True)
+    print(tokenizer.decode(out[0].tolist()).replace("\n", ""))
