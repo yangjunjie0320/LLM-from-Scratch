@@ -42,7 +42,12 @@ This repository provides a clean, educational codebase for understanding how GPT
 
 ## Training Steps
 
-This part is based on the nice [tutorial](https://github.com/jingyaogong/minimind?tab=readme-ov-file).
+This part is based on the nice [tutorial](https://github.com/jingyaogong/minimind?tab=readme-ov-file). The
+training data is obtained from [minimind_dataset](https://huggingface.co/datasets/jingyaogong/minimind_dataset/blob/main/pretrain_hq.jsonl) as:
+
+```bash
+wget https://huggingface.co/datasets/jingyaogong/minimind_dataset/resolve/main/pretrain_hq.jsonl
+```
 
 ### 1. Pretraining
 The foundation phase where the model learns language patterns from massive text corpora (Wikipedia, books, web content) using self-supervised learning. The primary objective is next-token prediction (causal language modeling), enabling the model to understand language structure and acquire broad knowledge. The loss function is the cross-entropy loss:
