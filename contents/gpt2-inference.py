@@ -113,33 +113,6 @@ class CausalSelfAttention(nn.Module):
         y = self.c_proj(x)
         assert y.shape == (batch_size, seq_len, n_embd)
         return y
-    
-class GPT(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        vocab_size = config.vocab_size
-        n_embd = config.n_embd
-        n_layer = config.n_layer
-        n_head = config.n_head
-        block_size = config.max_position_embeddings
-
-        self.vocab_size = vocab_size
-        self.n_embd = n_embd
-        self.n_layer = n_layer
-        self.n_head = n_head
-        self.block_size = block_size
-
-        transformer = {}
-        h = [Block(config) for _ in range(n_layer)]
-        transformer["h"]    = nn.ModuleList(h)
-        transformer["wte"]  = nn.Embedding(vocab_size, n_embd)
-        transformer["wpe"]  = nn.Embedding(block_size, n_embd)
-        transformer["ln_f"] = nn.LayerNorm(n_embd)
-        self.transformer = nn.ModuleDict(transformer)
-
-        # lm_head
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
 class GeLU(nn.Module):
     def forward(self, x):
@@ -299,18 +272,23 @@ if __name__ == "__main__":
     text = "Hello, how are you?"
     tokens = tokenizer.encode(text, return_tensors="pt")
 
+    # Our implementation, using the same weights
+    # from the official GPT2 implementation
     m_sol = GPT2.from_pretrained("gpt2")
     m_sol.eval()
     y_sol = m_sol.forward(tokens)[0]
 
+    # Official GPT2 implementation in transformers
     from transformers import GPT2LMHeadModel
     m_ref = GPT2LMHeadModel.from_pretrained("gpt2")
     m_ref.eval()
     y_ref = m_ref.forward(tokens)[0]
 
+    # Make sure our implementation is correct
     err = abs(y_sol - y_ref).max()
     assert err < 1e-3
 
+    # Generate text
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.eos_token_id
     inp = tokenizer(text, return_tensors="pt", padding=True)
@@ -322,7 +300,8 @@ if __name__ == "__main__":
         repetition_penalty=1.2,
         do_sample=False,
     )
-    print(tokenizer.decode(out_sol[0].tolist()).replace("\n", ""))
+    print("Our implementation:")
+    print(tokenizer.decode(out_sol[0].tolist()))
 
     out_ref = m_ref.generate(
         **inp, max_new_tokens=10, 
@@ -330,5 +309,6 @@ if __name__ == "__main__":
         repetition_penalty=1.2,
         do_sample=False,
     )
-    print(tokenizer.decode(out_ref[0].tolist()).replace("\n", ""))
+    print("\nTransformers implementation:")
+    print(tokenizer.decode(out_ref[0].tolist()))
 
