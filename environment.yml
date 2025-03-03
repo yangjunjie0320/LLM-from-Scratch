@@ -1,9 +1,11 @@
 channels:
-  - pytorch
-  - conda-forge
   - defaults
 dependencies:
-  - python=3.10
-  - pytorch-cpu
-  - transformers
+  - python
   - anaconda
+  - pip
+  - pip:
+    - torch
+    - torchvision
+    - torchaudio
+    - transformers

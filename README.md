@@ -4,11 +4,11 @@ This repository serves as a personal learning note for understanding the fundame
 concepts of large language models (LLMs), including some implementations built from scratch.
 
 ## Usage
-
+You can use the following script to install the dependencies.
 ```bash
 source setup.sh
 ```
-The script will create a conda environment with the name `llm-from-scratch` and install the dependencies.
+The script will create a conda environment with the name `llm-from-scratch`.
 
 ## The Building Blocks of a Large Language Model  
 
