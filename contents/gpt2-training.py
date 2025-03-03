@@ -202,10 +202,6 @@ def generate_sample(model, tokenizer, device, prompt="请告诉我世界上最�
     return generated_text
 
 
-def parse_arguments():
-
-
-
 def print_config(args):
     """Print training configuration."""
     print("\n" + "="*50)
@@ -245,14 +241,15 @@ def prepare_dataset(args):
 def initialize_model(device):
     """Initialize the GPT-2 model."""
     # Create a custom config without the problematic loss_type parameter
-    config = GPT2Config.from_pretrained("gpt2")
-    
-    # Remove the loss_type attribute if it exists in the config
-    if hasattr(config, 'loss_type'):
-        delattr(config, 'loss_type')
-    
-    # Load model with custom config
-    model = GPT2LMHeadModel.from_pretrained("gpt2", config=config)
+    config = GPT2Config(
+        vocab_size=50257,
+        n_positions=512,
+        n_embd=512,        # Reduced from standard 768
+        n_layer=8,         # Reduced from standard 12
+        n_head=8,          # Reduced from standard 12
+        activation_function="gelu_new"
+    )
+    model = GPT2LMHeadModel(config)
     model.to(device)
 
     print(f"Training on {device}")
