@@ -283,8 +283,8 @@ if __name__ == "__main__":
     from transformers import GPT2Tokenizer
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
 
-    text = "My name is"
-    tokens = tokenizer.encode(text, return_tensors="pt")·
+    text = "Hello, how are you?"
+    tokens = tokenizer.encode(text, return_tensors="pt")
 
     m_sol = GPT2.from_pretrained("gpt2")
     m_sol.eval()
@@ -296,7 +296,7 @@ if __name__ == "__main__":
     y_ref = m_ref.forward(tokens)[0]
 
     err = abs(y_sol - y_ref).max()
-    print("err = %6.4e" % err)
+    assert err < 1e-3
 
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -304,20 +304,18 @@ if __name__ == "__main__":
 
     m_sol.eval()
     out_sol = m_sol.generate(
-        **inp, max_new_tokens=20, 
+        **inp, max_new_tokens=10, 
         pad_token_id=tokenizer.eos_token_id, 
-        temperature=1.0, repetition_penalty=1.2,
-        do_sample=True,
+        repetition_penalty=1.2,
+        do_sample=False,
     )
     print(tokenizer.decode(out_sol[0].tolist()).replace("\n", ""))
 
     out_ref = m_ref.generate(
-        **inp, max_new_tokens=20, 
+        **inp, max_new_tokens=10, 
         pad_token_id=tokenizer.eos_token_id, 
-        temperature=1.0, repetition_penalty=1.2,
-        do_sample=True,
+        repetition_penalty=1.2,
+        do_sample=False,
     )
     print(tokenizer.decode(out_ref[0].tolist()).replace("\n", ""))
 
-    out = generate(m_sol, tokens, max_new_tokens=20, temperature=1.0, repetition_penalty=1.2, do_sample=True)
-    print(tokenizer.decode(out[0].tolist()).replace("\n", ""))
