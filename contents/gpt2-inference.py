@@ -39,6 +39,19 @@ class Conv1D(nn.Module):
         y = y.view(shape_out)
         return y
 
+# Differences between CausalSelfAttention and other Attention mechanisms
+# CausalSelfAttention is a special variant of the self-attention mechanism, mainly used 
+# in autoregressive generation models (like the GPT series). 
+
+# CausalSelfAttention:
+# - Uses a triangular mask to ensure each position can only attend to itself and previous positions
+# - Implements a strict left-to-right dependency relationship
+# - Mathematical representation: for positions i and j, if j > i, then mask[i,j] = -inf
+
+# Standard SelfAttention:
+# - Allows each position to attend to all positions in the sequence
+# - Implements bidirectional context dependency
+# - No position restrictions in the mask (may have padding masks)
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, n_embd=None, n_head=None, block_size=None):
