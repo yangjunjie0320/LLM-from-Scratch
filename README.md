@@ -14,7 +14,7 @@ The script will create a conda environment with the name `llm-from-scratch` and 
 
 To implement a minimal GPT model from scratch, we need the following key components:  
 
-### **Model Architecture**  
+### 1. Model Architecture  
 The core building block of a large language model is the **Transformer**, which consists of:  
 
 - **Attention Mechanisms** for contextual token interactions, with the following variants:  
@@ -28,17 +28,17 @@ The core building block of a large language model is the **Transformer**, which 
 
 - **Layer Normalization** for stabilizing training.  
 
-### **Training Components**  
+### 2. Training Components  
 - Tokenization and positional encoding  
 - Loss functions (typically cross-entropy for next-token prediction)  
 - Optimization algorithms (e.g., AdamW)  
 - Learning rate scheduling and regularization  
 
-### **Evaluation & Generation**  
+### 3. Evaluation & Generation  
 - Perplexity measurement for model evaluation  
 - Sampling strategies for text generation (e.g., greedy decoding, nucleus sampling)  
 
-This repository provides a clean, educational codebase for understanding how GPT models function under the hood.  
+This repository provides a clean, educational codebase for understanding how GPT models function under the hood. This part is implemented in `gpt2-inference.py`.
 
 ## Training Steps
 
@@ -68,3 +68,5 @@ Methods like LoRA (Low-Rank Adaptation), QLoRA, and adapter-based approaches all
 
 ### 6. Specialized Training for Reasoning
 Advanced techniques to enhance specific capabilities like reasoning, planning, and tool use. This may involve chain-of-thought prompting, specialized datasets with step-by-step reasoning, and techniques that encourage the model to break down complex problems into manageable steps.
+
+This part is implemented in `gpt2-training.py`.
