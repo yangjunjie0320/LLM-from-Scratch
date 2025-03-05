@@ -83,7 +83,7 @@ def check_sha(m: SingleHeadAttention):
 
     # Create test inputs
     batch_size = 10
-    seq_len = 100
+    seq_len = 80
     attn_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
 
     x = torch.randn(batch_size, seq_len, embed_dim)
@@ -109,7 +109,7 @@ def check_ma(m: MultiHeadAttention):
     m_ref.load_state_dict(sd_ref)
 
     batch_size = 10
-    seq_len = 100
+    seq_len = 80
     attn_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
 
     x = torch.randn(batch_size, seq_len, embed_dim)
