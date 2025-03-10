@@ -1,430 +1,243 @@
-import os, sys, torch
-import torch.utils.data
-from torch.utils.data import DataLoader
-from torch.optim import Adam
-from torch.nn import CrossEntropyLoss
-import time
-from datetime import datetime, timedelta
-import warnings
-import json
-import argparse
+import os, sys
+import logging
+from datetime import datetime
+from tqdm.auto import tqdm
 
-# Suppress specific HuggingFace warnings
-warnings.filterwarnings("ignore", message=".*Keyword arguments.*not recognized.*")
-warnings.filterwarnings("ignore", message=".*loss_type=None.*")
-warnings.filterwarnings("ignore", message=".*The model.*with a 'ForCausalLM'.*")
+import torch
+from torch.utils.data import Dataset, DataLoader
+from torch.optim import AdamW
 
-from transformers import GPT2Tokenizer, GPT2Config, GPT2LMHeadModel
+from transformers import get_scheduler, set_seed
+from transformers import GPT2Tokenizer
+from transformers import GPT2Config 
+from transformers import GPT2LMHeadModel
 
-# Our custom dataset class
-class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data_path, block_size=100, max_lines=1000):
-        assert os.path.exists(data_path)
-
-        # Initialize tokenizer with proper settings
-        self.enc = GPT2Tokenizer.from_pretrained("gpt2")
-        self.block_size = block_size
-
-        with open(data_path, "r", encoding="utf-8") as f:
-            text = f.read()
-
-        # Get the endoftext token - no warnings with this approach
-        self.eos_token = self.enc.eos_token_id
+# ======== Dataset Class ========
+class SimpleTextDataset(Dataset):
+    """Simple text dataset class"""
+    
+    def __init__(self, file_path, tokenizer, block_size=512, max_samples=None):
+        """
+        Initialize the dataset
         
-        # If eos_token_id is not available, fall back to manual encoding
-        if self.eos_token is None:
-            self.eos_token = self.enc.convert_tokens_to_ids(self.enc.eos_token or "<|endoftext|>")
-
+        Args:
+            file_path: Data file path
+            tokenizer: Tokenizer
+            block_size: Maximum sequence length
+            max_samples: Maximum number of samples
+        """
+        assert os.path.isfile(file_path), f"File does not exist: {file_path}"
+        
+        print(f"Loading data from file: {file_path}")
+        self.examples = []
+        
+        # Load data
         import json
-        data = []
-        with open(data_path, "r", encoding="utf-8") as f:
-            for iline, line in enumerate(f):
-                if iline >= max_lines:
+        lines = []
+        with open(file_path, encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if max_samples is not None and i >= max_samples:
                     break
-
-                line = json.loads(line.strip())['text']
-                line = self.enc.encode(line)
-                data.extend(line + [self.eos_token])
-
-        data_len = len(data)
-
-        self.data = []
-        for i in range(0, data_len, block_size):
-            chunk = data[i:i+block_size]
-            chunk += [self.eos_token] * (block_size - len(chunk))
-            self.data.append(chunk)
-
-        print(f"Loaded {len(self.data)} chunks from {data_path}")
-        print(f"Each chunk has {block_size} tokens")
-        print(f"Total tokens: {sum(len(chunk) for chunk in self.data)}")
-        print(f"Total lines: {iline + 1}")
+                try:
+                    line_data = json.loads(line.strip())
+                    if isinstance(line_data, dict) and "text" in line_data:
+                        lines.append(line_data["text"])
+                    else:
+                        lines.append(line.strip())
+                except json.JSONDecodeError:
+                    # If not JSON, treat as plain text
+                    lines.append(line.strip())
+        
+        # Tokenize all texts
+        tokenized_text = []
+        for text in lines:
+            tokenized_text.extend(tokenizer.encode(text))
+            # Add EOS token after each text
+            tokenized_text.append(tokenizer.eos_token_id)
+        
+        # Create samples of length block_size
+        for i in range(0, len(tokenized_text) - block_size, block_size):
+            self.examples.append(tokenized_text[i:i + block_size])
+        
+        print(f"Created {len(self.examples)} samples from {len(lines)} texts")
 
     def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        chunk = self.data[idx]
-        x = torch.tensor(chunk[:-1], dtype=torch.long)
-        y = torch.tensor(chunk[1:], dtype=torch.long)
-        return x, y
-    
-    def encode(self, text):
-        return self.enc.encode(text)
-    
-    def decode(self, ids):
-        return self.enc.decode(ids)
+        return len(self.examples)
+
+    def __getitem__(self, item):
+        return torch.tensor(self.examples[item], dtype=torch.long)
 
 
-def train(model, opt_obj, shd_obj, loader, device, epoch):
-    model.train()
-    total_loss = 0
-    criterion = CrossEntropyLoss()
+# ======== Training Configuration Class ========
+class TrainingConfig:
+    """Configuration class for GPT-2 training"""
+    block_size = 512
+    max_samples = 1000
+    num_train_epochs = 20
+    batch_size = 4
+    learning_rate = 5e-5
+    seed = 42
+    logging_steps = 200
     
-    # Track timing and tokens
-    start_time = time.time()
-    total_tokens = 0
-    
-    # Get total batches for progress tracking
-    total_batches = len(loader)
+    def __init__(self, model=None, tokenizer=None, dataset=None):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.dataset = dataset
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    for ibatch, (x, y) in enumerate(loader):
-        x = x.to(device)
-        y = y.to(device)
+        # Adjust token embedding size
+        self.model.resize_token_embeddings(len(self.tokenizer))
         
-        # Count tokens processed
-        batch_tokens = x.numel()
-        total_tokens += batch_tokens
-
-        # Fix the model call and loss calculation
-        outputs = model(x, labels=y)
-        loss = outputs.loss
-
-        opt_obj.zero_grad()
-        loss.backward()
-        opt_obj.step()
-        shd_obj.step()
-
-        total_loss += loss.item()
-
-        # Calculate elapsed time and tokens per second
-        elapsed = time.time() - start_time
-        tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
-        
-        # Get current learning rate
-        current_lr = opt_obj.param_groups[0]['lr']
-        
-        # Create progress indicator
-        progress = (ibatch + 1) / total_batches
-        progress_bar = '=' * int(30 * progress) + '>' + ' ' * (30 - int(30 * progress))
-        
-        # Estimate time remaining
-        if tokens_per_sec > 0:
-            tokens_remaining = (total_batches - ibatch - 1) * batch_tokens
-            time_remaining = tokens_remaining / tokens_per_sec
-            eta = datetime.now() + timedelta(seconds=time_remaining)
-            eta_str = eta.strftime("%H:%M:%S")
-        else:
-            eta_str = "Unknown"
-
-        if ibatch % 10 == 0:  # More frequent updates (every 10 batches)
-            print(f"\rEpoch {epoch} [{progress_bar}] {ibatch+1}/{total_batches} ({progress:.1%}) "
-                  f"Loss: {loss.item():.4f} (Avg: {total_loss/(ibatch+1):.4f}) "
-                  f"LR: {current_lr:.6f} "
-                  f"Speed: {tokens_per_sec:.1f} tokens/s "
-                  f"ETA: {eta_str}", end="")
-            sys.stdout.flush()
-
-    # Calculate final metrics
-    epoch_loss = total_loss / total_batches
-    elapsed = time.time() - start_time
-    tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
+        # Log model size
+        num_params = sum(p.numel() for p in self.model.parameters())
+        print(f"Model has {num_params / 1e6:.2f} million parameters")
     
-    # Print summary for the epoch
-    print(f"\nEpoch {epoch} completed in {elapsed:.2f}s - "
-          f"Loss: {epoch_loss:.4f} - "
-          f"Speed: {tokens_per_sec:.1f} tokens/s - "
-          f"Learning rate: {current_lr:.6f}")
-    
-    return epoch_loss
-
-
-def validate(model, loader, device):
-    model.eval()
-    total_loss = 0
-    start_time = time.time()
-    total_tokens = 0
-    total_batches = len(loader)
-    
-    # Progress tracking
-    print(f"Validating: ", end="")
-
-    with torch.no_grad():
-        for ibatch, (x, y) in enumerate(loader):
-            x = x.to(device)
-            y = y.to(device)
+    def generate_sample_text(self, prompt="今天天气真好", max_length=100):
+        """Generate sample text to monitor training progress"""
+        
+        if self.model is None or self.tokenizer is None or self.device is None:
+            raise ValueError("Model, tokenizer, and device must be set before generating text")
             
-            total_tokens += x.numel()
-
-            outputs = model(x, labels=y)
-            loss = outputs.loss
-            
-            total_loss += loss.item()
-            
-            # Update progress
-            if ibatch % 10 == 0:
-                progress = (ibatch + 1) / total_batches
-                progress_bar = '=' * int(20 * progress) + '>' + ' ' * (20 - int(20 * progress))
-                print(f"\rValidating: [{progress_bar}] {ibatch+1}/{total_batches} ({progress:.1%})", end="")
-                sys.stdout.flush()
-    
-    elapsed = time.time() - start_time
-    tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
-    valid_loss = total_loss / total_batches
-    
-    print(f"\rValidation completed in {elapsed:.2f}s - Loss: {valid_loss:.4f} - Speed: {tokens_per_sec:.1f} tokens/s")
-    
-    return valid_loss
-
-
-def generate_sample(model, tokenizer, device, prompt="请告诉我世界上最高的山峰是哪座？", max_length=50):
-    """Generate a text sample from the model during training to monitor progress."""
-    model.eval()
-    with torch.no_grad():
-        input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
-        output = model.generate(
-            input_ids, 
-            max_length=max_length, 
-            num_return_sequences=1,
+        self.model.eval()
+        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
+        
+        # Generate text
+        output = self.model.generate(
+            input_ids=input_ids,
+            max_length=max_length,
+            temperature=0.8,
+            top_k=50, top_p=0.9,
+            repetition_penalty=1.2,
             do_sample=True,
-            temperature=0.7,
+            num_return_sequences=1,
         )
-        generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
-    return generated_text
-
-
-def print_config(args):
-    """Print training configuration."""
-    print("\n" + "="*50)
-    print(f"GPT-2 Training Configuration")
-    print("="*50)
-    print(f"Data path:       {args.data_path}")
-    print(f"Block size:      {args.block_size}")
-    print(f"Max lines:       {args.max_lines}")
-    print(f"Epochs:          {args.epochs}")
-    print(f"Batch size:      {args.batch_size}")
-    print(f"Learning rate:   {args.learning_rate}")
-    print(f"Save directory:  {args.save_dir}")
-    print(f"Eval interval:   {args.eval_interval}")
-    print(f"Generate samples: {args.generate_samples}")
-    print("="*50 + "\n")
-
-
-def prepare_dataset(args):
-    """Prepare dataset and dataloaders."""
-    dataset = Dataset(args.data_path, args.block_size, args.max_lines)
+        
+        # Decode and return generated text
+        text = self.tokenizer.decode(output[0], skip_special_tokens=True)
+        return text
     
-    # Print dataset information after loading
-    print(f"Dataset loaded with {len(dataset)} chunks")
-    
-    train_size = int(0.9 * len(dataset))
-    valid_size = len(dataset) - train_size
-    
-    train_set, valid_set = torch.utils.data.random_split(dataset, [train_size, valid_size])
-    print(f"Dataset split: {train_size} training chunks, {valid_size} validation chunks")
+    def run(self):
+        """Main training function"""
+        
+        # Set random seed
+        set_seed(self.seed)
+        
+        # Create output directory with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output_dir = f"{self.output_dir}_{self.model_type}_{timestamp}"
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"Output will be saved to {output_dir}")
+        
+        model = self.model
+        param = model.parameters()
+        tokenizer = self.tokenizer
+        dataloader = DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            shuffle=True
+        )
+        
+        # Calculate total training steps
+        total_steps = len(dataloader) * self.num_train_epochs
+        
+        # Create optimizer
+        optimizer = AdamW(
+            param, eps=1e-8, 
+            lr=self.learning_rate
+        )
 
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
-    valid_loader = DataLoader(valid_set, batch_size=args.batch_size, shuffle=False)
-    
-    return dataset, train_loader, valid_loader
+        scheduler = get_scheduler(
+            name="linear", optimizer=optimizer, 
+            num_warmup_steps=0, 
+            num_training_steps=total_steps
+        )
+        
+        # Training loop
+        print("***** Starting training *****")
+        print(f"  Number of samples = {len(self.dataset)}")
+        print(f"  Number of epochs = {self.num_train_epochs}")
+        print(f"  Batch size = {self.batch_size}")
+        print(f"  Total steps = {total_steps}")
+        print(f"  Learning rate = {self.learning_rate}")
+        
+        global_step = 0
+        loss_tot = 0.0
+        
+        model.zero_grad()
+        
+        # Training loop
+        num_train_epochs = self.num_train_epochs
+        logging_steps = self.logging_steps
 
-
-def initialize_model(device):
-    """Initialize the GPT-2 model."""
-    # Create a custom config without the problematic loss_type parameter
-    config = GPT2Config(
-        vocab_size=50257,
-        n_positions=512,
-        n_embd=512,        # Reduced from standard 768
-        n_layer=8,         # Reduced from standard 12
-        n_head=8,          # Reduced from standard 12
-        activation_function="gelu_new"
-    )
-    model = GPT2LMHeadModel(config)
-    model.to(device)
-
-    print(f"Training on {device}")
-    nparam = sum(p.numel() for p in model.parameters())
-    print(f"Model has {nparam / 1e6:.2f} M parameters")
-    
-    return model
-
-
-def setup_training(model, args):
-    """Setup optimizer and scheduler."""
-    optimizer = Adam(model.parameters(), lr=args.learning_rate)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    
-    return optimizer, scheduler
-
-
-def save_checkpoint(model, optimizer, scheduler, epoch, train_loss, valid_loss, output_dir):
-    """Save a model checkpoint."""
-    checkpoint_path = f"{output_dir}/checkpoint_epoch_{epoch}.pt"
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-        'train_loss': train_loss,
-        'valid_loss': valid_loss,
-    }, checkpoint_path)
-    print(f"Checkpoint saved to {checkpoint_path}")
-
-
-def save_final_model(model, output_dir):
-    """Save the final model."""
-    final_model_path = f"{output_dir}/final_model.pt"
-    torch.save(model.state_dict(), final_model_path)
-    print(f"Final model saved to {final_model_path}")
-
-
-def save_training_history(train_losses, valid_losses, args, training_time, output_dir):
-    """Save training history to a JSON file."""
-    history = {
-        'train_losses': train_losses,
-        'valid_losses': valid_losses,
-        'args': vars(args),
-        'training_time': training_time,
-    }
-    
-    with open(f"{output_dir}/training_history.json", 'w') as f:
-        json.dump(history, f, indent=4)
-    
-    print(f"Training history saved to {output_dir}/training_history.json")
-
-
-def train_model(model, optimizer, scheduler, train_loader, valid_loader, 
-                device, args, output_dir, dataset):
-    """Main training loop."""
-    # Store training metrics for plotting later
-    train_losses = []
-    valid_losses = []
-    
-    # Track overall training time
-    training_start_time = time.time()
-    
-    print("\nStarting training...")
-    try:
-        for epoch in range(args.epochs):
-            # Training phase
-            train_loss = train(model, optimizer, scheduler, train_loader, device, epoch)
+        for epoch in range(num_train_epochs):
+            epoch_iterator = tqdm(dataloader, desc=f"Epoch {epoch+1:4d}/{num_train_epochs:4d}")
             
-            # Validation phase (only run every eval_interval epochs)
-            if (epoch % args.eval_interval) == 0 or epoch == args.epochs - 1:
-                valid_loss = validate(model, valid_loader, device)
-            else:
-                valid_loss = None
+            for step, batch in enumerate(epoch_iterator):
+                self.model.train()
+                batch = batch.to(self.device)
                 
-            # Store metrics
-            train_losses.append(train_loss)
-            if valid_loss is not None:
-                valid_losses.append(valid_loss)
-            
-            # Print epoch summary
-            if valid_loss is not None:
-                print(f"Epoch {epoch} summary - Train Loss: {train_loss:.4f}, Valid Loss: {valid_loss:.4f}")
-            else:
-                print(f"Epoch {epoch} summary - Train Loss: {train_loss:.4f}")
-            
-            # Save checkpoint
-            if valid_loss is not None:
-                save_checkpoint(model, optimizer, scheduler, epoch, train_loss, valid_loss, output_dir)
-            
-            # Generate sample text if requested
-            if args.generate_samples and hasattr(dataset, 'enc'):
-                sample = generate_sample(model, dataset.enc, device)
-                print(f"Sample generation: {sample}")
-            
-            print("-" * 50)
-    
-    except KeyboardInterrupt:
-        print("\nTraining interrupted by user. Saving final model...")
-    
-    # Calculate total training time
-    total_training_time = time.time() - training_start_time
-    hours, remainder = divmod(total_training_time, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    
-    training_time_str = f"{int(hours)}h {int(minutes)}m {int(seconds)}s"
-    print(f"\nTraining completed in {training_time_str}")
-    
-    # Print final metrics if available
-    if train_losses:
-        print(f"Final training loss: {train_losses[-1]:.4f}")
-    if valid_losses:
-        print(f"Final validation loss: {valid_losses[-1]:.4f}")
-    
-    # Save final model
-    save_final_model(model, output_dir)
-    
-    # Save training history
-    save_training_history(train_losses, valid_losses, args, training_time_str, output_dir)
-    
-    return train_losses, valid_losses
+                # Forward pass
+                outputs = self.model(batch, labels=batch)
+                loss = outputs.loss
+                
+                # Backward pass
+                loss.backward()
+                
+                loss_tot += loss.item()
+                global_step += 1
+                
+                # Update weights
+                optimizer.step()
+                scheduler.step()
+                model.zero_grad()
+                
+                # Log progress
+                if global_step % logging_steps == 0:
+                    perplexity = torch.exp(torch.tensor(loss_tot / global_step))
+                    loss_avg = loss_tot / global_step
 
+                    # Log information
+                    print(f"Step {global_step}/{total_steps} - Loss: {loss_avg:6.2e} - Perplexity: {perplexity:6.2e}")
+                    
+                    # Generate sample text
+                    sample_text = self.generate_sample_text()
+                    print(f"Generated sample: {sample_text}")
 
-def main(config):
-    # Set up output directory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_id = f"gpt2_{timestamp}"
-    output_dir = config.save_dir if config.save_dir else f"output_{run_id}"
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"Saving outputs to {output_dir}/")
-    
-    # Print configuration
-    print_config(config)
-    
-    # Prepare dataset and dataloaders
-    dataset, train_loader, valid_loader = prepare_dataset(config)
-    
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Initialize model
-    model = initialize_model(device)
-    
-    # Setup optimizer and scheduler
-    optimizer, scheduler = setup_training(model, config)
-    
-    # Train the model
-    train_losses, valid_losses = train_model(
-        model, optimizer, scheduler, train_loader, valid_loader, 
-        device, config, output_dir, dataset
-    )
-    
-    return train_losses, valid_losses
+                    self.save_model(global_step)
 
+        self.save_model()
+        print(f"Training completed, total {global_step} steps")
 
 if __name__ == "__main__":
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Train a GPT-2 model on custom data")
-    parser.add_argument("--data_path", type=str, default="data/train.jsonl",
-                        help="Path to the training data file")
-    parser.add_argument("--block_size", type=int, default=512,
-                        help="Size of token blocks for training")
-    parser.add_argument("--max_lines", type=int, default=500,
-                        help="Maximum number of lines to read from the data file")
-    parser.add_argument("--epochs", type=int, default=10,
-                        help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=16,
-                        help="Batch size for training")
-    parser.add_argument("--learning_rate", type=float, default=1e-4,
-                        help="Learning rate for optimizer")
-    parser.add_argument("--save_dir", type=str, default=None,
-                        help="Directory to save model checkpoints (default: auto-generated)")
-    parser.add_argument("--eval_interval", type=int, default=1,
-                        help="Interval (in epochs) to run evaluation")
-    parser.add_argument("--generate_samples", action="store_true",
-                        help="Generate text samples during training")
-    config = parser.parse_args()
-    main(config)
+    """Main function to run training"""
+    from datasets import load_dataset
+    dataset = load_dataset("pretrain_hq.jsonl")
+
+    tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    model_config = GPT2Config(
+        n_positions=512,
+        n_embd=384, n_layer=6, n_head=6,
+        vocab_size=tokenizer.vocab_size,
+        activation_function="gelu_new"
+    )
+    model = GPT2LMHeadModel.from_pretrained("gpt2", model_config)
+    model.resize_token_embeddings(len(tokenizer))
+
+    from transformers import Trainer, TrainingArguments
+    from transformers import GPT2LMHeadModel
+    from transformers import GPT2Tokenizer
+    from transformers import GPT2Config
+
+    training_config = TrainingArguments(
+        output_dir="./results",
+        evaluation_strategy="epoch",
+        learning_rate=2e-5,
+        weight_decay=0.01,
+        num_train_epochs=3,
+        per_device_train_batch_size=4,
+    )
+    trainer = Trainer(
+        model=model, args=training_config,
+        train_dataset=dataset,
+    )
+    trainer.train()
