@@ -2,49 +2,26 @@ import torch, typing
 from typing import Optional
 
 def generate(model : torch.nn.Module, input_ids : torch.Tensor, 
-             max_new_tokens : int = 20, temperature : float = 1.0, 
-             repetition_penalty : Optional[float] = None, 
-             do_sample : Optional[bool] = None, top_k : Optional[int] = None) -> torch.Tensor:
-    """
-    A simple text generation function.
-    
-    Args:
-        model: The GPT model
-        input_ids: Starting token ids, a integer tensor of shape (batch_size, seq_len)
-        max_new_tokens: Maximum number of tokens to generate
-        temperature: Controls randomness (lower = more deterministic)
-    
-    Returns:
-        Generated token ids including the input_ids
-    """
-    if repetition_penalty is not None:
-        raise NotImplementedError("Repetition penalty is not implemented")
-    
-    if do_sample is not None:
-        raise NotImplementedError("Do sample is not implemented")
-    
-    if top_k is not None:
-        raise NotImplementedError("Top k is not implemented")
+             attention_mask : Optional[torch.Tensor] = None,
+             max_new_tokens : int = 20, temperature : float = 1.0):
 
     # Set the model to evaluation mode
     model.eval()
     
     # Clone the input_ids, generated is a integer 
     # tensor of shape (batch_size, seq_len)
-    generated : torch.Tensor = input_ids.clone()
+    generated : torch.Tensor = input_ids
     batch_size : int = generated.shape[0]
     seq_len : int = generated.shape[1]
     vocab_size : int = model.config.vocab_size # type: ignore
     assert generated.shape == (batch_size, seq_len)
-    print(generated.shape)
     
     # Generate tokens one by one
     with torch.no_grad():
         for itoken in range(max_new_tokens):
             # Get logits from the model
-            outputs = model(generated)
+            outputs = model(generated, attention_mask=attention_mask)
             logits = outputs.logits if hasattr(outputs, 'logits') else outputs
-            print(logits.shape)
 
             # Logits is a float tensor of shape (batch_size, seq_len + itoken + 1, vocab_size)
             assert logits.shape == (batch_size, seq_len + itoken, vocab_size)
@@ -78,17 +55,26 @@ def generate(model : torch.nn.Module, input_ids : torch.Tensor,
     return generated
 
 if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     from transformers import GPT2Tokenizer, GPT2LMHeadModel
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-
-    text = "My name is"
-    tokens = tokenizer.encode(text, return_tensors="pt")
-
+    tokenizer.pad_token = tokenizer.eos_token
     m_ref = GPT2LMHeadModel.from_pretrained("gpt2")
     m_ref.eval()
 
+    # get token and attention mask
+    text = "My name is"
+    tokens = tokenizer(text, return_tensors="pt")
+
+    input_ids = tokens["input_ids"] 
+    attention_mask = tokens["attention_mask"]
+
+    out = m_ref.generate(input_ids, attention_mask=attention_mask, max_length=20, temperature=1.0)
+    print(tokenizer.decode(out[0].tolist()).replace("\n", ""))
+
     out = generate(
-        m_ref, tokens, max_new_tokens=20, temperature=1.0, 
-        repetition_penalty=None, do_sample=None, top_k=None
+        m_ref, input_ids, attention_mask=attention_mask,
+        max_new_tokens=20, temperature=1.0
         )
     print(tokenizer.decode(out[0].tolist()).replace("\n", ""))
