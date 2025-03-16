@@ -1,8 +1,4 @@
-import torch
-from torch.utils.data import Dataset, DataLoader
-
-import transformers
-
+import torch, transformers
 
 # Check if GPU is available
 print("Transformers version:", transformers.__version__)
